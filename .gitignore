@@ -4,8 +4,11 @@ __pycache__/
 *.pyc
 .DS_Store
 
-# ROM dumps are copyrighted — never commit these, even to a private repo.
+# ROM dumps are copyrighted. This repo intentionally tracks only the one
+# release ROM below (CI embeds it into every release binary); keep any other
+# dumps out of git.
 *.nds
+!Mario Kart DS (USA) (En,Fr,De,Es,It).nds
 *.srl
 *.sav*
 *.dmg
@@ -16,3 +19,10 @@ vendor/melonDS-src/build/
 
 # Generated locally, bakes in this machine's LAN IP
 web/qr.png
+
+# AppImage build output (packaging/linux/build-appimage.sh)
+dist/
+
+# Downloaded CI artifacts / zipped ROM dumps dropped at the repo root
+/*.zip
+/*.AppImage

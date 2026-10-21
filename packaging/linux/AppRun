@@ -1,0 +1,21 @@
+#!/bin/bash
+# DS64 AppImage entrypoint. The AppImage bundles Qt, a relocatable Python with
+# DS64's dependencies, the gesture/phone scripts, and the controller page; this
+# script only points the executable at that runtime. melonDS itself then
+# generates the phone QR codes, serves web/controller.html, and boots the ROM
+# compiled into the binary — the same bootstrap the Windows/macOS packages use.
+HERE="$(dirname "$(readlink -f "$0")")"
+DS64_SHARE="$HERE/usr/share/ds64"
+
+# Bundled Python (python-build-standalone) — never the host's.
+export PYTHONHOME="$HERE/usr"
+export PYTHONNOUSERSITE=1
+unset PYTHONPATH
+export DS64_BUNDLE_DIR="$DS64_SHARE"
+export DS64_TOOLS_DIR="$DS64_SHARE/tools"
+export LD_LIBRARY_PATH="$HERE/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+# Any arguments (a ROM path, or melonDS's own "RESTART SETUP" relaunching us
+# with its previous arguments) are passed straight through. With no arguments,
+# melonDS boots the ROM compiled into the executable.
+exec "$HERE/usr/bin/melonDS" "$@"

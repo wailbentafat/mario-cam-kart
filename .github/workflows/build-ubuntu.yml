@@ -9,16 +9,21 @@ on:
     branches:
       - master
 
+# A newer push to the same branch/PR supersedes the running build, instead
+# of two identical runs competing for runners and the vcpkg cache.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   MELONDS_GIT_BRANCH: ${{ github.ref }}
   MELONDS_GIT_HASH: ${{ github.sha }}
   MELONDS_BUILD_PROVIDER: GitHub Actions
-  DS64_SRC: vendor/melonDS-src
 
 jobs:
   build:
-    continue-on-error: true
     strategy:
+      fail-fast: false
       matrix:
         arch:
           - runner: ubuntu-22.04
@@ -28,43 +33,33 @@ jobs:
 
     name: ${{ matrix.arch.name }}
     runs-on: ${{ matrix.arch.runner }}
+    # aarch64 is best-effort: not every Python wheel DS64 needs is
+    # published for it. x86_64 is what releases ship.
+    continue-on-error: ${{ matrix.arch.name != 'x86_64' }}
 
     steps:
     - uses: actions/checkout@v4
       name: Check out sources
-    - name: Install dependencies
-      run: |
-        sudo apt update
-        sudo apt install --allow-downgrades cmake ninja-build extra-cmake-modules libpcap0.8-dev libsdl2-dev libenet-dev \
-          qt6-{base,base-private,multimedia}-dev qt6-wayland libqt6svg6-dev libarchive-dev libzstd-dev libfuse2 libfaad-dev \
-          python3-dev python3-venv
-    - name: Configure
-      working-directory: ${{ env.DS64_SRC }}
-      run: cmake -B build -G Ninja -DCMAKE_INSTALL_PREFIX=/usr -DMELONDS_EMBED_BUILD_INFO=ON
-    - name: Build
-      working-directory: ${{ env.DS64_SRC }}
-      run: |
-        cmake --build build
-        DESTDIR=AppDir cmake --install build
-    - uses: actions/upload-artifact@v4
-      with:
-        name: melonDS-ubuntu-${{ matrix.arch.name }}
-        path: ${{ env.DS64_SRC }}/AppDir/usr/bin/melonDS
-    - name: Fetch AppImage tools
-      working-directory: ${{ env.DS64_SRC }}
-      run: |
-        wget https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-${{ matrix.arch.name }}.AppImage
-        wget https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-${{ matrix.arch.name }}.AppImage
-        chmod a+x linuxdeploy-*.AppImage
+    # The same self-contained AppImage the release ships (Qt + bundled
+    # Python + all DS64 Python deps), built in a clean ubuntu:22.04
+    # container — see the script's header. A plain linuxdeploy run is not
+    # enough: it bundles libpython but not Python's standard library, so
+    # the embedded interpreter cannot start.
     - name: Build the AppImage
-      working-directory: ${{ env.DS64_SRC }}
-      env:
-        EXTRA_PLATFORM_PLUGINS: libqwayland-egl.so;libqwayland-generic.so
-        EXTRA_QT_PLUGINS: waylandcompositor
-        QMAKE: /usr/lib/qt6/bin/qmake
       run: |
-        ./linuxdeploy-${{ matrix.arch.name }}.AppImage --appdir AppDir --plugin qt --output appimage
+        mkdir -p dist
+        docker run --rm -e HOST_UID=$(id -u) -e HOST_GID=$(id -g) \
+          -e MELONDS_GIT_BRANCH -e MELONDS_GIT_HASH -e MELONDS_BUILD_PROVIDER \
+          -v "$PWD":/src:ro -v "$PWD/dist":/out ubuntu:22.04 \
+          bash /src/packaging/linux/build-appimage.sh
+    - name: Smoke-test the AppImage
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq xvfb xauth libfuse2 \
+          libegl1 libgl1 libopengl0 libgbm1 libasound2 libfontconfig1 libfreetype6 libharfbuzz0b \
+          libsm6 libice6 libx11-xcb1 libwayland-client0 libxkbcommon-x11-0 libxcb-cursor0 libdbus-1-3 >/dev/null
+        python3 packaging/smoke_test.py dist/DS64-${{ matrix.arch.name }}.AppImage
     - uses: actions/upload-artifact@v4
       with:
-        name: melonDS-appimage-${{ matrix.arch.name }}
-        path: ${{ env.DS64_SRC }}/melonDS*.AppImage
+        name: DS64-linux-${{ matrix.arch.name }}
+        path: dist/DS64-${{ matrix.arch.name }}.AppImage

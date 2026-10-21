@@ -27,9 +27,22 @@ contract as tools/gesture/gesture_engine.py except session-scoped.
 import json
 import threading
 
+from websockets.exceptions import ConnectionClosed
 from websockets.sync.server import serve
 
 STEER_DEADZONE = 0.25
+
+# Close code sent to a phone that connects to a player slot another phone
+# already owns (4000-4999 is the application-defined range). controller.html
+# shows a dedicated message for it instead of a generic "disconnected".
+SLOT_TAKEN_CODE = 4001
+
+# A phone that vanishes without a clean close (Wi-Fi drop, screen lock)
+# still holds its slot until keepalive notices — keep that window short so
+# the player can rejoin, instead of websockets' 20s+20s default.
+PING_INTERVAL = 5
+PING_TIMEOUT = 5
+CLOSE_TIMEOUT = 2
 
 _IDLE_STATE = {"steer": 0.0, "accel": False, "brake": False, "drift": False, "item": False}
 
@@ -37,7 +50,11 @@ _IDLE_STATE = {"steer": 0.0, "accel": False, "brake": False, "drift": False, "it
 class _Session:
     def __init__(self):
         self.lock = threading.Lock()
-        self.connected = False
+        # The one phone driving this player, or None. Exactly one phone per
+        # port: a second one (e.g. both players scanned the same QR) used to
+        # be accepted too, interleaving its input with the first's and
+        # flipping `connected` to False when either one left.
+        self.owner = None
         self.latest = dict(_IDLE_STATE)
         self.server = None
         self.thread = None
@@ -46,7 +63,15 @@ class _Session:
 def _make_handler(session: _Session):
     def _handler(websocket):
         with session.lock:
-            session.connected = True
+            if session.owner is not None:
+                rejected = True
+            else:
+                rejected = False
+                session.owner = websocket
+        if rejected:
+            websocket.close(SLOT_TAKEN_CODE, "player slot already taken")
+            return
+
         try:
             for message in websocket:
                 try:
@@ -61,9 +86,11 @@ def _make_handler(session: _Session):
                         "drift": bool(data.get("drift", False)),
                         "item": bool(data.get("item", False)),
                     }
+        except ConnectionClosed:
+            pass  # phone dropped without a clean close (keepalive timeout)
         finally:
             with session.lock:
-                session.connected = False
+                session.owner = None
                 session.latest = dict(_IDLE_STATE)
 
     return _handler
@@ -75,7 +102,9 @@ def init(port: int):
     session = _Session()
 
     try:
-        server = serve(_make_handler(session), "0.0.0.0", port)
+        server = serve(_make_handler(session), "0.0.0.0", port,
+                       ping_interval=PING_INTERVAL, ping_timeout=PING_TIMEOUT,
+                       close_timeout=CLOSE_TIMEOUT)
     except OSError:
         return None
 
@@ -110,7 +139,7 @@ def poll(session) -> dict:
         return {"connected": False, "direction": "STRAIGHT", "throttle": "NEUTRAL", "drift": False, "item": False}
 
     with session.lock:
-        connected = session.connected
+        connected = session.owner is not None
         latest = dict(session.latest)
 
     steer = latest["steer"]

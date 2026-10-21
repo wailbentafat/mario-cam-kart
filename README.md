@@ -21,10 +21,12 @@ phone WebSocket server both run embedded directly inside melonDS itself.
 
 ## Quick start
 
-1. **Get the ROM.** DS64 does not and will never include a Mario Kart DS ROM
-   — that's Nintendo's copyrighted game. Dump your own cartridge, or obtain
-   one legally, and drop the `.nds` file in the repo root.
-2. **Run the launcher for your OS:**
+1. **Get the ROM.** This repo tracks the USA Mario Kart DS `.nds` at its
+   root; release builds bake it into the executable, so downloaded builds
+   need no separate ROM file. If you build from source with a different
+   dump, put that `.nds` in the repo root (or pass
+   `-DDS64_EMBED_ROM_FILE=/path/to/game.nds` when configuring CMake).
+2. **Run the launcher for your OS (source builds only):**
 
    | OS | Command |
    |---|---|
@@ -62,6 +64,11 @@ system Python 3, then hand off to `play.py`, which:
 - Pre-generates the QR codes, launches melonDS, serves the phone controller
   page, and cleans everything up together when you stop it.
 
+Release binaries do all of that themselves: the C++ bootstrap in `main.cpp`
+finds the Python runtime/scripts/web page packaged next to it (or inside the
+macOS `.app`), sets up the same environment, generates the QR codes, and
+serves the controller page. `play.py` is only needed for source builds.
+
 ## Install a prebuilt release (skip building from source)
 
 Building from source the first time can take several minutes (longer on
@@ -69,15 +76,24 @@ Windows). If a [release](../../releases) is available for your platform,
 download it instead:
 
 1. Grab the `DS64-<platform>-<arch>` archive from the
-   [Releases page](../../releases) and unzip it.
-2. Place the extracted `melonDS` (Linux AppImage), `melonDS.app` (macOS), or
-   `melonDS.exe` (Windows) at `vendor/melonDS-src/build/` in the matching
-   location `play.py` expects:
-   - macOS: `vendor/melonDS-src/build/melonDS.app`
-   - Linux: `vendor/melonDS-src/build/melonDS` (the AppImage, made executable)
-   - Windows: `vendor/melonDS-src/build/melonDS.exe`
-3. Run `./play.sh` / `play.bat` as usual — since a binary already exists, it
-   skips straight past the build step.
+   [Releases page](../../releases) and unzip it. The Mario Kart DS ROM,
+   Python runtime, camera/phone scripts, and controller page are all inside;
+   there's no separate `.nds`, virtualenv, or launcher to set up.
+2. Launch the app directly:
+   - **Windows:** open the extracted `DS64-windows-x86_64` folder and run
+     `melonDS.exe`. Keep the folder intact — `python/`, `tools/`, and `web/`
+     sit next to it and are what the executable loads.
+   - **macOS:** drag `melonDS.app` wherever you like and double-click it. It
+     carries `Python.framework` and its DS64 resources inside the bundle.
+     Release builds are ad-hoc signed but not notarized, so Gatekeeper may
+     say the app is "damaged" or from an unidentified developer. If macOS
+     refuses the first launch, run
+     `xattr -dr com.apple.quarantine /path/to/melonDS.app` (or right-click
+     the app and choose **Open**).
+   - **Linux:** make the AppImage executable (`chmod +x DS64-x86_64.AppImage`)
+     and run it, or double-click it if your desktop supports AppImages.
+3. `play.sh` / `play.bat` / `play.py` are not involved in release builds;
+   they remain the source-checkout workflow above.
 
 Releases are built by `.github/workflows/release.yml` on every version tag
 (CI also runs the same build on every push to `master`, so build health is

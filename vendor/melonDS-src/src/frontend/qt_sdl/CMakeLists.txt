@@ -65,6 +65,7 @@ set(SOURCES_QT_SDL
     GestureController.cpp
     PhoneController.h
     PhoneController.cpp
+    Ds64Python.cpp
 )
 
 option(USE_QT6 "Use Qt 6 instead of Qt 5" ON)
@@ -113,11 +114,66 @@ else()
 endif()
 add_compile_definitions(GESTURE_VENV_SITE_PACKAGES="${DS64_VENV_SITE_PACKAGES}")
 
+# DS64 releases are standalone: the ROM is compiled into the executable (as a
+# Qt resource) so a downloaded .exe/.app/AppImage doesn't need a sidecar .nds.
+# Off by default for normal source builds; CI turns it on. If no explicit file
+# is given, the .nds at the root of this repo (two levels above the melonDS
+# source dir) is used.
+option(DS64_EMBED_ROM "Embed a Nintendo DS ROM into the melonDS executable" OFF)
+set(DS64_EMBED_ROM_FILE "" CACHE FILEPATH "Explicit .nds file to embed (defaults to the repo-root ROM)")
+
+if (DS64_EMBED_ROM)
+    if (NOT DS64_EMBED_ROM_FILE)
+        file(GLOB DS64_REPO_ROMS "${CMAKE_SOURCE_DIR}/../../*.nds")
+        list(SORT DS64_REPO_ROMS)
+        list(LENGTH DS64_REPO_ROMS DS64_REPO_ROM_COUNT)
+        if (DS64_REPO_ROM_COUNT EQUAL 0)
+            message(FATAL_ERROR "DS64_EMBED_ROM is ON, but no .nds file was found in the repo root. "
+                                "Set DS64_EMBED_ROM_FILE explicitly.")
+        endif()
+        list(GET DS64_REPO_ROMS 0 DS64_EMBED_ROM_FILE)
+    endif()
+
+    get_filename_component(DS64_EMBED_ROM_FILE "${DS64_EMBED_ROM_FILE}" ABSOLUTE)
+    if (NOT EXISTS "${DS64_EMBED_ROM_FILE}")
+        message(FATAL_ERROR "DS64_EMBED_ROM_FILE does not exist: ${DS64_EMBED_ROM_FILE}")
+    endif()
+    if (IS_DIRECTORY "${DS64_EMBED_ROM_FILE}")
+        message(FATAL_ERROR "DS64_EMBED_ROM_FILE is a directory: ${DS64_EMBED_ROM_FILE}")
+    endif()
+
+    file(SHA256 "${DS64_EMBED_ROM_FILE}" DS64_EMBED_ROM_HASH)
+    # rcc needs forward slashes in the .qrc on every platform (including
+    # Windows), and the path has to be XML-escaped.
+    file(TO_CMAKE_PATH "${DS64_EMBED_ROM_FILE}" DS64_EMBED_ROM_QRC_PATH)
+    string(REPLACE "&" "&amp;" DS64_EMBED_ROM_QRC_PATH "${DS64_EMBED_ROM_QRC_PATH}")
+    string(REPLACE "<" "&lt;" DS64_EMBED_ROM_QRC_PATH "${DS64_EMBED_ROM_QRC_PATH}")
+    string(REPLACE ">" "&gt;" DS64_EMBED_ROM_QRC_PATH "${DS64_EMBED_ROM_QRC_PATH}")
+    set(DS64_EMBED_ROM_QRC "${CMAKE_CURRENT_BINARY_DIR}/ds64_rom.qrc")
+    file(WRITE "${DS64_EMBED_ROM_QRC}"
+        "<!DOCTYPE RCC>\n"
+        "<RCC version=\"1.0\">\n"
+        "    <qresource prefix=\"/ds64\">\n"
+        "        <file alias=\"game.nds\">${DS64_EMBED_ROM_QRC_PATH}</file>\n"
+        "    </qresource>\n"
+        "</RCC>\n"
+    )
+    message(STATUS "DS64: embedding ROM ${DS64_EMBED_ROM_FILE} (sha256 ${DS64_EMBED_ROM_HASH})")
+endif()
+
 fix_interface_includes(PkgConfig::SDL2 PkgConfig::LibArchive)
 
 add_compile_definitions(ARCHIVE_SUPPORT_ENABLED)
 
 add_executable(melonDS ${SOURCES_QT_SDL})
+
+if (DS64_EMBED_ROM)
+    target_sources(melonDS PRIVATE "${DS64_EMBED_ROM_QRC}")
+    target_compile_definitions(melonDS PRIVATE
+        DS64_EMBEDDED_ROM_PATH=":/ds64/game.nds"
+        DS64_EMBEDDED_ROM_HASH="${DS64_EMBED_ROM_HASH}"
+    )
+endif()
 
 add_subdirectory("../../net"
     ${CMAKE_BINARY_DIR}/net)
@@ -276,7 +332,8 @@ if (APPLE)
         endif()
         add_custom_command(TARGET melonDS POST_BUILD
             COMMAND ${CMAKE_SOURCE_DIR}/tools/mac-libs.rb ${DMGARG} ${CMAKE_BINARY_DIR}
-            COMMENT "Bundling macOS libraries...")
+            COMMENT "Bundling macOS libraries..."
+            VERBATIM)
     endif()
 endif()
 

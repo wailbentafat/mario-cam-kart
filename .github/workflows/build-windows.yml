@@ -9,6 +9,12 @@ on:
     branches:
       - master
 
+# A newer push to the same branch/PR supersedes the running build, instead
+# of two identical runs competing for runners and the vcpkg cache.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   MELONDS_GIT_BRANCH: ${{ github.ref }}
   MELONDS_GIT_HASH: ${{ github.sha }}
@@ -33,6 +39,11 @@ jobs:
       uses: actions/checkout@v4
     - name: Set up CMake
       uses: lukka/get-cmake@latest
+    - name: Set up Python
+      id: setup-python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
     - name: Restore vcpkg cache
       uses: actions/cache/restore@v4
       with:
@@ -53,14 +64,28 @@ jobs:
       run: >
         cmake --preset release-windows-${{ matrix.arch.name }}
         -DENABLE_DEBUG_DEPS=OFF -DMELONDS_EMBED_BUILD_INFO=ON
+        -DUSE_CCACHE=OFF
+        -DDS64_EMBED_ROM=ON
         -DVCPKG_ROOT="$env:VCPKG_ROOT"
+        -DPython3_EXECUTABLE="${{ steps.setup-python.outputs.python-path }}"
     - name: Build
       working-directory: ${{ env.DS64_SRC }}
       run: cmake --build --preset release-windows-${{ matrix.arch.name }}
+    - name: Package standalone bundle
+      shell: pwsh
+      run: |
+        ./packaging/windows/make-bundle.ps1 `
+          -Binary "${{ env.DS64_SRC }}\build\release-windows-${{ matrix.arch.name }}\melonDS.exe" `
+          -Python "${{ steps.setup-python.outputs.python-path }}" `
+          -RepoRoot "${{ github.workspace }}" `
+          -OutDir "${{ github.workspace }}\DS64-windows-${{ matrix.arch.name }}"
+        & "${{ steps.setup-python.outputs.python-path }}" packaging/smoke_test.py "${{ github.workspace }}\DS64-windows-${{ matrix.arch.name }}"
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        Compress-Archive -Path "DS64-windows-${{ matrix.arch.name }}" -DestinationPath "DS64-windows-${{ matrix.arch.name }}.zip"
     - uses: actions/upload-artifact@v4
       with:
-        name: melonDS-windows-${{ matrix.arch.name }}
-        path: ${{ env.DS64_SRC }}\build\release-windows-${{ matrix.arch.name }}\melonDS.exe
+        name: DS64-windows-${{ matrix.arch.name }}
+        path: DS64-windows-${{ matrix.arch.name }}.zip
     - name: Save vcpkg cache
       uses: actions/cache/save@v4
       with:

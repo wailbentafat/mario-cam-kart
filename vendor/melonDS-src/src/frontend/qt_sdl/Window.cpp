@@ -44,6 +44,7 @@
 #include <QDesktopServices>
 #include <QPushButton>
 #include <QDir>
+#include <QPointer>
 
 #include "main.h"
 #include "CheatsDialog.h"
@@ -86,6 +87,67 @@ using namespace melonDS;
 
 extern CameraManager* camManager[2];
 extern bool camStarted[2];
+
+
+// Keeps a phone-QR label pinned to the top-right corner of *its own
+// player's* game panel, re-placing it on every resize/move of that panel
+// (window resize, split-screen grid relayout). Pinning to the window
+// instead put player 1's code on top of player 2's panel in a 2-player
+// split — covering player 2's real code, so both phones scanned 8765 —
+// and let it drift off-screen when the window shrank. The label may be
+// parented to the panel itself or to any ancestor of it (player 1's sits
+// on the MainWindow so it stays above a GL panel in single-player).
+class QrOverlayPinner : public QObject
+{
+public:
+    QrOverlayPinner(QLabel* label, QWidget* panel, int margin)
+        : QObject(label), label(label), panel(panel), margin(margin)
+    {
+        panel->installEventFilter(this);
+        place();
+    }
+
+    void place()
+    {
+        if (!panel) return;
+        QPoint topRight = panel->mapTo(label->parentWidget(), QPoint(panel->width(), 0));
+        label->move(topRight.x() - label->width() - margin, topRight.y() + margin);
+        label->raise();
+    }
+
+protected:
+    bool eventFilter(QObject*, QEvent* event) override
+    {
+        switch (event->type())
+        {
+        case QEvent::Resize:
+        case QEvent::Move:
+        case QEvent::Show:
+            place();
+            break;
+        default:
+            break;
+        }
+        return false;
+    }
+
+private:
+    QLabel* label;
+    QPointer<QWidget> panel;
+    int margin;
+};
+
+static void pinQrOverlay(QLabel* label, QWidget* panel, int margin)
+{
+    // Re-pinning (the panel gets recreated on renderer changes) replaces
+    // the old pinner rather than stacking a second one.
+    for (QObject* child : label->children())
+    {
+        if (dynamic_cast<QrOverlayPinner*>(child))
+            child->deleteLater();
+    }
+    new QrOverlayPinner(label, panel, margin);
+}
 
 
 QString NdsRomMimeType = "application/x-nintendo-ds-rom";
@@ -669,29 +731,15 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
     move(frameGeo.topLeft());
 #endif
 
-    // DS64 split-screen tiling: when a multi-phone session is active
-    // (g_DS64TotalPlayers > 1), each instance's window gets its own
-    // screen tile instead of whatever geometry it last remembered — see
-    // EmuInstance.cpp's constructor for how total/instanceID are set.
+    // DS64 split-screen: this (instance 0's) window hosts every player's
+    // panel in its grid (see addMultiplayerPanel), so it takes the whole
+    // screen rather than whatever geometry it last remembered. It used to
+    // get a single tile from the old one-window-per-player layout — a
+    // quarter of the screen for 3-4 players, crushing the bottom row's
+    // panels (and their QR codes) to a few pixels tall.
     if (g_DS64TotalPlayers > 1)
     {
-        QRect avail = QGuiApplication::primaryScreen()->availableGeometry();
-        int idx = emuInstance->instanceID;
-        QRect tile;
-        if (g_DS64TotalPlayers == 2)
-        {
-            int halfW = avail.width() / 2;
-            tile = QRect(avail.x() + idx * halfW, avail.y(), halfW, avail.height());
-        }
-        else // 3 or 4 players: 2x2 grid (3 leaves one quadrant empty)
-        {
-            int halfW = avail.width() / 2;
-            int halfH = avail.height() / 2;
-            int col = idx % 2;
-            int row = idx / 2;
-            tile = QRect(avail.x() + col * halfW, avail.y() + row * halfH, halfW, halfH);
-        }
-        setGeometry(tile);
+        setGeometry(QGuiApplication::primaryScreen()->availableGeometry());
     }
     else
     {
@@ -739,10 +787,8 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
             qrOverlay->setAttribute(Qt::WA_TransparentForMouseEvents);
             qrOverlay->setPixmap(qrPix.scaledToWidth(180, Qt::SmoothTransformation));
             qrOverlay->adjustSize();
-            qrOverlay->move(width() - qrOverlay->width() - 16,
-                             hasMenu ? 16 + menuBar()->height() : 16);
             qrOverlay->show();
-            qrOverlay->raise();
+            pinQrOverlay(qrOverlay, panel, 16);
         }
     }
 
@@ -982,7 +1028,7 @@ void MainWindow::createScreenPanel()
     if (gestureOverlay)
         gestureOverlay->raise(); // setCentralWidget() can restack children
     if (qrOverlay)
-        qrOverlay->raise();
+        pinQrOverlay(qrOverlay, panel, 16); // panel may have been recreated
 
     if (hasMenu)
         actScreenFiltering->setEnabled(hasOGL);
@@ -1033,14 +1079,9 @@ void MainWindow::addMultiplayerPanel(EmuInstance* inst)
             panelQrOverlay->setPixmap(qrPix.scaledToWidth(140, Qt::SmoothTransformation));
             panelQrOverlay->adjustSize();
             panelQrOverlay->show();
-            panelQrOverlay->raise();
-            // newPanel's real size isn't known until the grid layout
-            // settles (just added above) — reposition once that's
-            // happened rather than trusting width() right now.
-            QTimer::singleShot(250, newPanel, [newPanel, panelQrOverlay]() {
-                panelQrOverlay->move(newPanel->width() - panelQrOverlay->width() - 12, 12);
-                panelQrOverlay->raise();
-            });
+            // Re-placed on every resize of newPanel, including the one
+            // when the grid layout first settles after this insertion.
+            pinQrOverlay(panelQrOverlay, newPanel, 12);
         }
     }
 }
@@ -1948,7 +1989,17 @@ void MainWindow::onMPNewInstance()
 
 void MainWindow::onDS64Setup()
 {
+    // This process is about to hard-exit, so release the controller page port
+    // explicitly — the freshly started instance needs to bind it.
+    ds64StopBundledServices();
+
     QString exe = QCoreApplication::applicationFilePath();
+    // Inside an AppImage, applicationFilePath() points into the AppImage's
+    // temporary mount, which disappears as soon as this process exits —
+    // relaunch the .AppImage file itself instead (its runtime sets APPIMAGE).
+    QString appImage = qEnvironmentVariable("APPIMAGE");
+    if (!appImage.isEmpty())
+        exe = appImage;
     QStringList args = QCoreApplication::arguments();
     if (!args.isEmpty())
         args.removeFirst(); // drop argv[0] (the exe path itself)

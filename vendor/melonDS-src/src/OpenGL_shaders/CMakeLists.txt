@@ -39,6 +39,7 @@ foreach(SH_INPUT ${OPENGL_SHADER_FILES})
             -D VAR_NAME=${SH_NAME}
             -P "${CMAKE_CURRENT_LIST_DIR}/../../cmake/MakeEmbed.cmake"
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        VERBATIM
     )
     list(APPEND OPENGL_SHADER_OUT ${SH_OUTPUT})
 endforeach()

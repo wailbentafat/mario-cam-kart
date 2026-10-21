@@ -9,6 +9,12 @@ on:
     branches:
       - master
 
+# A newer push to the same branch/PR supersedes the running build, instead
+# of two identical runs competing for runners and the vcpkg cache.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   MELONDS_GIT_BRANCH: ${{ github.ref }}
   MELONDS_GIT_HASH: ${{ github.sha }}
@@ -49,6 +55,13 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Install Python dependencies for the bundle
+        run: |
+          ./packaging/macos/install-python-deps.sh \
+            "${{ matrix.arch }}" \
+            "${{ steps.setup-python.outputs.python-path }}" \
+            "$GITHUB_WORKSPACE" \
+            "$RUNNER_TEMP/ds64-site-packages"
       - name: Restore vcpkg cache
         uses: actions/cache/restore@v4
         with:
@@ -69,11 +82,23 @@ jobs:
         run: >
           cmake --preset release-mac-${{ matrix.arch }}
           -DMELONDS_EMBED_BUILD_INFO=ON
+          -DDS64_EMBED_ROM=ON
           -DVCPKG_ROOT="$VCPKG_ROOT"
           -DPython3_EXECUTABLE="${{ steps.setup-python.outputs.python-path }}"
       - name: Build
         working-directory: ${{ env.DS64_SRC }}
         run: cmake --build --preset release-mac-${{ matrix.arch }}
+      - name: Assemble standalone app bundle
+        run: |
+          ./packaging/macos/make-bundle.sh \
+            "${{ env.DS64_SRC }}/build/release-mac-${{ matrix.arch }}/melonDS.app" \
+            "$GITHUB_WORKSPACE" \
+            "${{ steps.setup-python.outputs.python-path }}" \
+            "$RUNNER_TEMP/ds64-site-packages"
+      - name: Smoke-test the app bundle
+        run: >
+          "${{ steps.setup-python.outputs.python-path }}" packaging/smoke_test.py
+          "${{ env.DS64_SRC }}/build/release-mac-${{ matrix.arch }}/melonDS.app"
       - name: Compress app bundle
         shell: bash
         run: |

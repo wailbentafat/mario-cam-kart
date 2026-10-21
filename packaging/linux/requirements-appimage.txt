@@ -1,0 +1,23 @@
+# What the AppImage bundles — the runtime subset of requirements.txt.
+# build-appimage.sh installs mediapipe itself with --no-deps, because its
+# declared dependencies drag in ~600 MB DS64 never loads (jax + jaxlib,
+# scipy, sounddevice, and a second OpenCV next to opencv-python). These
+# are the ones mediapipe.solutions.hands actually imports:
+absl-py
+attrs
+flatbuffers
+protobuf>=4.25.3,<5
+matplotlib   # imported unconditionally by mediapipe.solutions.drawing_utils
+numpy
+# The OpenCV build mediapipe itself depends on; provides cv2 for the
+# gesture script too, so opencv-python isn't needed alongside it. The
+# headless variant: DS64 only captures and draws on frames (no cv2.imshow),
+# and the GUI build needs the host's GTK/glib (libgthread-2.0.so.0) and
+# ships a second Qt that can clash with melonDS's.
+opencv-contrib-python-headless
+
+# DS64's own scripts
+websockets
+qrcode
+pillow   # qrcode.make_image() needs an image backend for the QR PNGs
+psutil   # tools/lan_ip.py enumerates network interfaces for the QR address

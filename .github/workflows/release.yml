@@ -2,8 +2,16 @@ name: Release
 
 # Builds melonDS for Windows/macOS/Linux and publishes them as downloadable
 # assets on a GitHub Release whenever a version tag (v1.0.0 etc.) is pushed.
-# This is what lets someone install DS64 without building from source
-# themselves — see the "Install a prebuilt release" section in README.md.
+# Each binary has the repo's Mario Kart DS ROM compiled in (DS64_EMBED_ROM),
+# so it runs without a separate .nds file. This is what lets someone install
+# DS64 without building from source themselves — see the "Install a prebuilt
+# release" section in README.md.
+#
+# Test builds: a tag with a "-" in it (v0.2.0-test1, v1.0.0-rc1, ...) makes a
+# *draft* release instead — visible only to the repo's collaborators, not
+# public, no notifications — so the binaries can be downloaded straight from
+# the release page and tried before cutting a real tag. Delete the draft and
+# the tag afterwards.
 on:
   push:
     tags:
@@ -23,37 +31,26 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-      - name: Install dependencies
-        run: |
-          sudo apt update
-          sudo apt install --allow-downgrades cmake ninja-build extra-cmake-modules libpcap0.8-dev libsdl2-dev libenet-dev \
-            qt6-{base,base-private,multimedia}-dev qt6-wayland libqt6svg6-dev libarchive-dev libzstd-dev libfuse2 libfaad-dev \
-            python3-dev python3-venv
-      - name: Configure
-        working-directory: ${{ env.DS64_SRC }}
-        run: cmake -B build -G Ninja -DCMAKE_INSTALL_PREFIX=/usr -DMELONDS_EMBED_BUILD_INFO=ON
-      - name: Build
-        working-directory: ${{ env.DS64_SRC }}
-        run: |
-          cmake --build build
-          DESTDIR=AppDir cmake --install build
-      - name: Fetch AppImage tools
-        working-directory: ${{ env.DS64_SRC }}
-        run: |
-          wget https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
-          wget https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
-          chmod a+x linuxdeploy-*.AppImage
+      # Self-contained AppImage (Qt + bundled Python + all DS64 Python deps),
+      # built in a clean ubuntu:22.04 container — see the script's header.
       - name: Build the AppImage
-        working-directory: ${{ env.DS64_SRC }}
-        env:
-          EXTRA_PLATFORM_PLUGINS: libqwayland-egl.so;libqwayland-generic.so
-          EXTRA_QT_PLUGINS: waylandcompositor
-          QMAKE: /usr/lib/qt6/bin/qmake
-        run: ./linuxdeploy-x86_64.AppImage --appdir AppDir --plugin qt --output appimage
+        run: |
+          mkdir -p dist
+          docker run --rm -e HOST_UID=$(id -u) -e HOST_GID=$(id -g) \
+            -e MELONDS_GIT_BRANCH -e MELONDS_GIT_HASH -e MELONDS_BUILD_PROVIDER \
+            -v "$PWD":/src:ro -v "$PWD/dist":/out -v "$HOME/.cache/ds64-appimage":/cache ubuntu:22.04 \
+            bash /src/packaging/linux/build-appimage.sh
+      - name: Smoke-test the AppImage
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb xauth libfuse2 \
+            libegl1 libgl1 libopengl0 libgbm1 libasound2 libfontconfig1 libfreetype6 libharfbuzz0b \
+            libsm6 libice6 libx11-xcb1 libwayland-client0 libxkbcommon-x11-0 libxcb-cursor0 libdbus-1-3 >/dev/null
+          python3 packaging/smoke_test.py dist/DS64-x86_64.AppImage
       - uses: actions/upload-artifact@v4
         with:
           name: DS64-linux-x86_64
-          path: ${{ env.DS64_SRC }}/melonDS*.AppImage
+          path: dist/DS64-x86_64.AppImage
 
   build-macos:
     strategy:
@@ -75,6 +72,13 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Install Python dependencies for the bundle
+        run: |
+          ./packaging/macos/install-python-deps.sh \
+            "${{ matrix.arch }}" \
+            "${{ steps.setup-python.outputs.python-path }}" \
+            "$GITHUB_WORKSPACE" \
+            "$RUNNER_TEMP/ds64-site-packages"
       - uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}/vcpkg_cache
@@ -87,11 +91,22 @@ jobs:
         working-directory: ${{ env.DS64_SRC }}
         run: >
           cmake --preset release-mac-${{ matrix.arch }}
-          -DMELONDS_EMBED_BUILD_INFO=ON -DVCPKG_ROOT="$VCPKG_ROOT"
+          -DMELONDS_EMBED_BUILD_INFO=ON -DDS64_EMBED_ROM=ON -DVCPKG_ROOT="$VCPKG_ROOT"
           -DPython3_EXECUTABLE="${{ steps.setup-python.outputs.python-path }}"
       - name: Build
         working-directory: ${{ env.DS64_SRC }}
         run: cmake --build --preset release-mac-${{ matrix.arch }}
+      - name: Assemble standalone app bundle
+        run: |
+          ./packaging/macos/make-bundle.sh \
+            "${{ env.DS64_SRC }}/build/release-mac-${{ matrix.arch }}/melonDS.app" \
+            "$GITHUB_WORKSPACE" \
+            "${{ steps.setup-python.outputs.python-path }}" \
+            "$RUNNER_TEMP/ds64-site-packages"
+      - name: Smoke-test the app bundle
+        run: >
+          "${{ steps.setup-python.outputs.python-path }}" packaging/smoke_test.py
+          "${{ env.DS64_SRC }}/build/release-mac-${{ matrix.arch }}/melonDS.app"
       - name: Compress app bundle
         run: |
           cd ${{ env.DS64_SRC }}/build/release-mac-${{ matrix.arch }}
@@ -108,6 +123,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: lukka/get-cmake@latest
+      - name: Set up Python
+        id: setup-python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}/vcpkg_cache
@@ -122,13 +142,24 @@ jobs:
         run: >
           cmake --preset release-windows-x86_64
           -DENABLE_DEBUG_DEPS=OFF -DMELONDS_EMBED_BUILD_INFO=ON
+          -DUSE_CCACHE=OFF
+          -DDS64_EMBED_ROM=ON
           -DVCPKG_ROOT="$env:VCPKG_ROOT"
+          -DPython3_EXECUTABLE="${{ steps.setup-python.outputs.python-path }}"
       - name: Build
         working-directory: ${{ env.DS64_SRC }}
         run: cmake --build --preset release-windows-x86_64
-      - name: Zip binary
+      - name: Package standalone bundle
         shell: pwsh
-        run: Compress-Archive -Path "${{ env.DS64_SRC }}\build\release-windows-x86_64\melonDS.exe" -DestinationPath "DS64-windows-x86_64.zip"
+        run: |
+          ./packaging/windows/make-bundle.ps1 `
+            -Binary "${{ env.DS64_SRC }}\build\release-windows-x86_64\melonDS.exe" `
+            -Python "${{ steps.setup-python.outputs.python-path }}" `
+            -RepoRoot "${{ github.workspace }}" `
+            -OutDir "${{ github.workspace }}\DS64-windows-x86_64"
+          & "${{ steps.setup-python.outputs.python-path }}" packaging/smoke_test.py "${{ github.workspace }}\DS64-windows-x86_64"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Compress-Archive -Path "DS64-windows-x86_64" -DestinationPath "DS64-windows-x86_64.zip"
       - uses: actions/upload-artifact@v4
         with:
           name: DS64-windows-x86_64
@@ -136,6 +167,10 @@ jobs:
 
   publish:
     needs: [build-ubuntu, build-macos, build-windows]
+    # Each OS package is self-contained, so one platform failing must not
+    # hold back the others: publish whatever built and passed its smoke
+    # test. The release notes list any platform that is missing.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     # The default GITHUB_TOKEN is read-only unless a job explicitly asks
     # for more — without this, softprops/action-gh-release fails with
@@ -152,7 +187,20 @@ jobs:
           mkdir -p release-assets
           find artifacts -type f \( -name "*.zip" -o -name "*.AppImage" \) -exec cp {} release-assets/ \;
           ls -la release-assets
+          if [ -z "$(ls -A release-assets)" ]; then
+            echo "::error::No platform built successfully; nothing to publish."
+            exit 1
+          fi
+          {
+            for asset in DS64-x86_64.AppImage DS64-macos-x86_64.zip DS64-macos-arm64.zip DS64-windows-x86_64.zip; do
+              [ -f "release-assets/$asset" ] || echo "- ⚠️ \`$asset\` failed to build for this release."
+            done
+          } > missing.md
+          cat missing.md
       - uses: softprops/action-gh-release@v2
         with:
           files: release-assets/*
+          body_path: missing.md
           generate_release_notes: true
+          draft: ${{ contains(github.ref_name, '-') }}
+          prerelease: ${{ contains(github.ref_name, '-') }}

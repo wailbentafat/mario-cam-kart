@@ -5,10 +5,15 @@
 # is used by play.py itself for cross-platform process/port management
 # (replacing macOS-only pkill/lsof shell calls).
 opencv-python
-mediapipe==0.10.14
+# Camera mode only. gesture_engine.py uses the legacy mp.solutions API,
+# which later mediapipe releases removed, and 0.10.14 has no wheels past
+# Python 3.12 — skip it there so phone mode still installs and runs
+# (play.py warns that camera mode is unavailable).
+mediapipe==0.10.14; python_version < "3.13"
 websockets
 numpy
 qrcode
+pillow   # qrcode.make_image() needs an image backend for the QR PNGs
 psutil
 
 # Only needed for play.py's macOS window-sizing workaround (a rendering

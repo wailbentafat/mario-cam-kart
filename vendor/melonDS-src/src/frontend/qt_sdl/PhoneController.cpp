@@ -5,6 +5,7 @@
 #include <Python.h>
 
 #include "PhoneController.h"
+#include "main.h"
 #include "EmuInstance.h"
 
 #include <QDebug>
@@ -86,6 +87,11 @@ void PhoneController::WorkerLoop()
     // this controller — EmuThread only reads the mutex-protected
     // snapshot — so one GIL acquisition for the whole thread lifetime is
     // correct and avoids per-iteration Ensure()/Release() overhead.
+    if (ds64PythonInitializationFailed())
+    {
+        qWarning() << "PhoneController: Python runtime is unavailable";
+        return;
+    }
     if (!Py_IsInitialized())
         Py_InitializeEx(0);
     PyGILState_STATE gstate = PyGILState_Ensure();
@@ -100,8 +106,11 @@ void PhoneController::WorkerLoop()
         // websockets isn't installed for the system interpreter we embed
         // — reuse the project's venv (same one GestureController uses).
 #ifdef GESTURE_VENV_SITE_PACKAGES
-        PyObject* venvDir = PyUnicode_FromString(GESTURE_VENV_SITE_PACKAGES);
-        PyList_Append(sysPath, venvDir);
+        QByteArray venvSite = ds64Path("DS64_VENV_SITE_PACKAGES", GESTURE_VENV_SITE_PACKAGES).toUtf8();
+        PyObject* venvDir = PyUnicode_FromString(venvSite.constData());
+        // Insert first so the venv's versions win over any older copies in
+        // the system dist-packages or ~/.local (e.g. Debian's websockets).
+        PyList_Insert(sysPath, 0, venvDir);
         Py_DECREF(venvDir);
 #endif
     }

@@ -608,7 +608,7 @@ document.getElementById('go').addEventListener('click', async () => {
     // player's choice.
     document.getElementById('mode-select').style.display = 'flex';
   };
-  ws.onclose = () => {
+  ws.onclose = (ev) => {
     clearTimeout(connectTimeout);
     document.getElementById('status').textContent = 'disconnected';
     document.getElementById('status-dot').classList.remove('live');
@@ -617,7 +617,13 @@ document.getElementById('go').addEventListener('click', async () => {
     document.getElementById('gear-btn').style.display = 'none';
     document.getElementById('settings-panel').style.display = 'none';
     document.getElementById('connect').style.display = 'flex';
-    setConnectStatus('disconnected — tap to retry', true);
+    // 4001 = phone_bridge.SLOT_TAKEN_CODE: another phone already drives
+    // this player (e.g. this phone scanned someone else's QR code).
+    if (ev.code === 4001) {
+      setConnectStatus('this player is already taken — scan your own QR code', true);
+    } else {
+      setConnectStatus('disconnected — tap to retry', true);
+    }
   };
   ws.onerror = () => {
     setConnectStatus('connection failed — check host is on the same Wi-Fi', true);
